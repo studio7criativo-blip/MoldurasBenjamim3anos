@@ -1,0 +1,250 @@
+Código html para filtros do instagram
+
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Captura de Câmera → DataURI</title>
+  <style>
+    :root{
+      --bg:#f6f7fb; --card:#ffffff; --accent:#2563eb; --muted:#6b7280;
+    }
+    body{
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      margin:0; padding:24px; background:var(--bg); color:#0f172a;
+    }
+    .container{ max-width:920px; margin:0 auto; display:grid; gap:16px; }
+    .card{ background:var(--card); padding:16px; border-radius:12px; box-shadow:0 6px 18px rgba(15,23,42,0.06); }
+    header{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    h1{ margin:0; font-size:18px; }
+    .layout{ display:grid; grid-template-columns: 1fr 420px; gap:16px; }
+    video{ width:100%; height:auto; border-radius:8px; background:#000; display:block; }
+    canvas{ width:100%; max-height:360px; border-radius:8px; display:block; background:#eee; }
+    .controls{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+    button{ padding:8px 12px; border-radius:8px; border:1px solid rgba(0,0,0,0.06); background:linear-gradient(#fff,#f7fbff); cursor:pointer; }
+    button.primary{ background:var(--accent); color:white; border:none; }
+    .small{ font-size:13px; color:var(--muted); }
+    textarea{ width:100%; height:120px; padding:8px; border-radius:8px; border:1px solid #e6e9ef; font-family:monospace; font-size:12px; resize:vertical; }
+    .hidden{ display:none !important; }
+    @media (max-width:880px){ .layout{ grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <header>
+        <h1>Capturar foto da câmera → DataURI</h1>
+        <div class="small">Requer HTTPS / localhost</div>
+      </header>
+
+      <div class="layout" style="margin-top:12px;">
+        <div>
+          <video id="video" autoplay playsinline muted></video>
+          <div class="controls" style="margin-top:8px;">
+            <button id="startBtn" class="primary">Iniciar câmera</button>
+            <button id="captureBtn" disabled>Capturar</button>
+            <button id="stopBtn" disabled>Parar câmera</button>
+            <select id="facing" title="Escolher câmera">
+              <option value="user">Frontal (user)</option>
+              <option value="environment">Traseira (environment)</option>
+            </select>
+          </div>
+          <div class="small" style="margin-top:8px;" id="status">Status: aguardando ação</div>
+        </div>
+
+        <div>
+          <div class="card" style="padding:12px;">
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+              <strong>Preview / Resultado</strong>
+              <button id="downloadBtn" disabled style="margin-left:auto;">Baixar PNG</button>
+            </div>
+            <canvas id="canvas" width="640" height="480" aria-label="preview de captura"></canvas>
+            <div style="margin-top:8px;" class="small">DataURI (img/png):</div>
+            <textarea id="datauri" readonly placeholder="Aqui aparecerá o DataURI depois da captura"></textarea>
+            <div style="display:flex; gap:8px; margin-top:8px;">
+              <button id="copyBtn" disabled>Copiar DataURI</button>
+              <button id="clearBtn">Limpar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+/*
+  Funcionalidades:
+  - startCamera(): solicita permissão e exibe o stream no <video>.
+  - capture(): desenha o video atual no canvas e gera dataURL.
+  - stopCamera(): para as tracks e limpa o vídeo.
+  Atenção: getUserMedia exige HTTPS ou localhost.
+*/
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+const startBtn = document.getElementById('startBtn');
+const captureBtn = document.getElementById('captureBtn');
+const stopBtn = document.getElementById('stopBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const copyBtn = document.getElementById('copyBtn');
+const clearBtn = document.getElementById('clearBtn');
+
+const datauriEl = document.getElementById('datauri');
+const statusEl = document.getElementById('status');
+const facingSelect = document.getElementById('facing');
+
+let currentStream = null;
+
+// Helpers
+function setStatus(text){
+  statusEl.textContent = 'Status: ' + text;
+}
+function enable(...els){ els.forEach(e => e.disabled = false); }
+function disable(...els){ els.forEach(e => e.disabled = true); }
+
+// Start camera with chosen facing mode
+async function startCamera(){
+  try {
+    setStatus('solicitando permissão da câmera...');
+    // constraints - prefer selected facingMode; browser may ignore if not available
+    const facingMode = facingSelect.value || 'user';
+    const constraints = {
+      video: { facingMode: { ideal: facingMode }, width: {ideal: 1280}, height: {ideal: 720} },
+      audio: false
+    };
+
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    // stop existing if any
+    stopCamera();
+    currentStream = stream;
+    video.srcObject = stream;
+    // enable controls
+    enable(captureBtn, stopBtn);
+    disable(startBtn);
+    setStatus('câmera ativa');
+  } catch (err) {
+    console.error('Erro ao iniciar câmera:', err);
+    if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
+      setStatus('permissão negada — permita a câmera no navegador');
+    } else {
+      setStatus('erro ao acessar câmera: ' + (err.message || err.name));
+    }
+  }
+}
+
+// Draw current frame to canvas and create DataURI
+function capture(){
+  if (!currentStream) {
+    setStatus('câmera não iniciada');
+    return;
+  }
+  const videoTrack = currentStream.getVideoTracks()[0];
+  const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+  // set canvas size to video size for best quality; fallback to element size
+  const w = settings.width || video.videoWidth || canvas.width;
+  const h = settings.height || video.videoHeight || canvas.height;
+  canvas.width = w;
+  canvas.height = h;
+
+  // Draw frame
+  try {
+    ctx.drawImage(video, 0, 0, w, h);
+  } catch(e){
+    console.error('drawImage falhou', e);
+    setStatus('falha ao capturar imagem');
+    return;
+  }
+
+  // Generate DataURI (PNG)
+  try {
+    const mime = 'image/png';
+    const dataURL = canvas.toDataURL(mime); // padrão 'image/png'
+    datauriEl.value = dataURL;
+    enable(downloadBtn, copyBtn);
+    setStatus('captura realizada');
+  } catch (err) {
+    console.error('Erro ao gerar DataURI:', err);
+    setStatus('erro ao gerar DataURI');
+  }
+}
+
+function stopCamera(){
+  if (currentStream) {
+    currentStream.getTracks().forEach(track => track.stop());
+    currentStream = null;
+  }
+  video.srcObject = null;
+  disable(captureBtn, stopBtn, downloadBtn, copyBtn);
+  setStatus('câmera parada');
+  enable(startBtn);
+}
+
+// Download current canvas as PNG
+function downloadImage(filename = 'capture.png'){
+  try {
+    const dataURL = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = dataURL;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (err) {
+    console.error('Erro ao baixar imagem:', err);
+    setStatus('erro ao baixar imagem');
+  }
+}
+
+// Copy DataURI to clipboard (might be grande)
+async function copyDataURI(){
+  try {
+    const text = datauriEl.value;
+    if (!text) return;
+    // Clipboard.writeText may fail on some browsers if large; try anyway
+    await navigator.clipboard.writeText(text);
+    setStatus('DataURI copiado para a área de transferência');
+  } catch (err) {
+    console.error('Erro ao copiar:', err);
+    setStatus('não foi possível copiar automaticamente. Selecione e copie manualmente.');
+  }
+}
+
+// Clear canvas and fields
+function clearAll(){
+  ctx.clearRect(0,0,canvas.width, canvas.height);
+  datauriEl.value = '';
+  disable(downloadBtn, copyBtn);
+  setStatus('limpo');
+}
+
+// Events
+startBtn.addEventListener('click', startCamera);
+captureBtn.addEventListener('click', capture);
+stopBtn.addEventListener('click', stopCamera);
+downloadBtn.addEventListener('click', () => downloadImage());
+copyBtn.addEventListener('click', copyDataURI);
+clearBtn.addEventListener('click', clearAll);
+
+// Auto-request permission if user changes facing mode while camera active
+facingSelect.addEventListener('change', async () => {
+  if (currentStream) {
+    // restart with new facing mode
+    await startCamera();
+  }
+});
+
+// On page unload, stop camera
+window.addEventListener('pagehide', stopCamera);
+window.addEventListener('beforeunload', stopCamera);
+
+// Initialize UI state
+disable(captureBtn, stopBtn, downloadBtn, copyBtn);
+setStatus('pronto — pressione "Iniciar câmera"');
+</script>
+</body>
+</html>
+Adicione index.html com código da câmera
